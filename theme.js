@@ -243,7 +243,10 @@ function newPreviewToken() {
 
 function drawPreview(entry, index) {
   const token = newPreviewToken();
-  const video = option("enable_table_video", true) && entry.media.includes("playfield_video");
+  // The video follows the person's Playfield Media Priority. The picture always shows first
+  // so the preview is never empty while the video loads.
+  const art = vpin.getMedia(index, "playfield");
+  const video = art.kind === "video";
   // getImageURL has no FSS fallback: a table with only an FSS picture would get the
   // placeholder.
   const still = ["playfield", "playfield_fss"].find((kind) => entry.media.includes(kind));
@@ -262,7 +265,7 @@ function drawPreview(entry, index) {
   if (!video) return;
   videoTimer = setTimeout(() => {
     if (token !== previewToken) return;
-    const node = videoNode(vpin.getVideoURL(index, "playfield"));
+    const node = videoNode(art.url);
     showLayer(node, "loadeddata", token);
   }, VIDEO_DELAY_MS);
 }
@@ -332,11 +335,12 @@ function drawMark(entry, index) {
 
   // A tall screen hides the header, so it is not worth playing a video there.
   if (getComputedStyle(markEl).display === "none") return;
-  if (!option("enable_selector_header_bg_video", true) || !entry.media.includes("backglass_video")) return;
+  const art = vpin.getMedia(index, "backglass");
+  if (art.kind !== "video") return;     // the person's Backglass Media Priority picks the video
   const token = previewToken;
   setTimeout(() => {
     if (token !== previewToken) return;
-    const node = videoNode(vpin.getVideoURL(index, "backglass"));
+    const node = videoNode(art.url);
     node.addEventListener("loadeddata", () => {
       if (token === previewToken) markEl.replaceChildren(node);
       else {

@@ -1,21 +1,7 @@
 {
   "title": "Texal Options",
-  "description": "How Texal draws a table's preview, the list header and the flyer.",
+  "description": "How Texal draws the flyer.",
   "options": [
-    {
-      "key": "enable_table_video",
-      "name": "Play the playfield video",
-      "description": "Play the table's playfield video in the preview when it has one. Without a video, or with this off, the preview is the playfield picture.",
-      "type": "boolean",
-      "default": true
-    },
-    {
-      "key": "enable_selector_header_bg_video",
-      "name": "Play the backglass video in the list header",
-      "description": "Play the table's backglass video above the list when it has one. Without a video, or with this off, the header shows the backglass picture.",
-      "type": "boolean",
-      "default": true
-    },
     {
       "key": "showFlyer",
       "name": "Show the flyer",

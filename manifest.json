@@ -5,7 +5,7 @@
   "description": "A copper-lit list of tables beside a framed preview, with the backglass behind it all.",
   "preview_image": "preview.png",
   "type": "both",
-  "change_log": "Rebuilt for VPinFE 3.0: core now handles input, audio, preloading, layout, the loading indicator, attract mode and the backglass and score view pages, so the theme is one playfield page. New option: Show the flyer, which also shows a panel of your own stats for the table. The community rating from VPinPlay shows beside the title when a table has one.",
+  "change_log": "Rebuilt for VPinFE 3.0.\n\nCore now handles input, audio, preloading, layout, the loading indicator, attract mode and the backglass and score view pages, so the theme is one playfield page.\n\nTexal-Flyer is part of Texal now. Turn on Show the flyer to see the table's flyer beside the preview, with a panel of your own stats for the table. The community rating from VPinPlay shows beside the title when a table has one.\n\nThe two video options are gone. The preview plays the playfield video as Playfield Media Priority in VPinFE's settings asks for, and the header above the list plays the backglass video as Backglass Media Priority asks for. Set either to Image to keep the picture.",
   "min_vpinfe": "3.0",
   "windows": ["playfield"]
 }
