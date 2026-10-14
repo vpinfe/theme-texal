@@ -1,941 +1,449 @@
-/*
-ES-inspired pinball showcase theme.
-Built around persistent DOM updates for smoother browsing.
-*/
-
-windowName = "";
-currentTableIndex = 0;
-config = null;
-lastRenderedTableIndex = -1;
-lastMoveDirection = 0;
-let tableView = null;
-let previewSwapToken = 0;
-let mediaDelayTimer = null;
-let rightStageDriftTween = null;
-let selectorPulseTween = null;
-let rippleTimelines = [];
-let selectorFrameTimeline = null;
-
-const mediaPreloadCache = new Map();
+// Texal - a list of tables down the right, and the selected table's backglass, art and
+// features in the middle.
+//
+// This file does five things, in this order: read the options, draw the backglass, draw
+// the selection, draw the list, and hand every message to core. Input, audio, preloading,
+// layout, the loading indicator, attract mode and the backglass and score view pages are
+// core's.
 
 const vpin = new VPinFECore();
-vpin.init();
-window.vpin = vpin;
-window.receiveEvent = receiveEvent;
+window.vpin = vpin;                  // core and its overlays look for this name
+window.receiveEvent = receiveEvent;  // core delivers every message through this one
 
-vpin.ready.then(async () => {
-    await vpin.call("get_my_window_name").then((result) => {
-        windowName = result;
-    });
+const stage = document.querySelector(".stage");
 
-    vpin.registerInputHandler(handleInput);
-    config = await vpin.call("get_theme_config");
-    updateScreen();
+async function start() {
+  vpin.init();
+  await vpin.ready;                  // the tables, the options and the layout are in
+
+  // Input. Core moves the selection, pages it and opens the menu and the collection
+  // picker. Select is the one action it leaves to a theme.
+  vpin.registerInputHandler((action) => {
+    if (action === "select") vpin.launchTable(vpin.getCurrentTableIndex());
+  });
+
+  stage.dataset.flyer = option("showFlyer", false) ? "on" : "off";
+  startAmbientMotion();
+  draw({ reason: "enter" });
+  document.body.dataset.ready = "true";
+}
+
+// --- 1. Options ---------------------------------------------------------------------
+// options.json declares them and carries their defaults; core merges in what the person
+// chose.
+
+function option(key, fallback) {
+  const value = vpin.themeConfig ? vpin.themeConfig[key] : undefined;
+  return value === undefined ? fallback : value;
+}
+
+// --- 2. The backglass ---------------------------------------------------------------
+// Two pictures stacked. The new table's backglass is loaded into the one at the back,
+// then faded in over the other.
+
+const backdrops = Array.from(document.querySelectorAll(".backdrop-art"));
+let frontBackdrop = 0;
+
+function drawBackdrop(url) {
+  const previous = backdrops[frontBackdrop];
+  const next = backdrops[1 - frontBackdrop];
+  next.onload = null;                // a slow picture for a table no longer selected must not fade in
+
+  if (!url) {
+    previous.classList.remove("on");
+    return;
+  }
+  if (previous.getAttribute("src") === url) {
+    previous.classList.add("on");
+    return;
+  }
+  next.onload = () => {
+    next.classList.add("on");
+    previous.classList.remove("on");
+    frontBackdrop = 1 - frontBackdrop;
+  };
+  next.src = url;
+}
+
+// --- 3. The selection ---------------------------------------------------------------
+// Everything about the selected table is on its entry. A collection in the picker is a
+// row with a name, a count and pictures.
+
+const themeEl = document.getElementById("selection");
+const wheelEl = document.getElementById("wheel");
+const nameEl = document.getElementById("name");
+const ratingEl = document.getElementById("rating");
+const authorsEl = document.getElementById("authors");
+const metaEl = document.getElementById("meta");
+const previewEl = document.getElementById("preview");
+const flyerEl = document.getElementById("flyer");
+const markEl = document.getElementById("mark");
+const featuresEl = document.getElementById("features");
+const addonsEl = document.getElementById("addons");
+const statsEl = document.getElementById("stats");
+const emptyEl = document.getElementById("empty");
+
+const LONG_NAME = 20;
+const VIDEO_DELAY_MS = 260;
+const FADE_MS = 220;
+
+function drawSelection(list) {
+  const empty = list.length === 0;
+  emptyEl.hidden = !empty;
+  emptyEl.textContent = vpin.t("frontend.theme.no_tables_found", "No tables found");
+  themeEl.hidden = empty;
+  if (empty) {
+    drawBackdrop("");
+    return;
+  }
+
+  document.getElementById("features-heading").textContent =
+    vpin.t("frontend.theme.detected_features", "Detected Features");
+  document.getElementById("addons-heading").textContent = "Add-ons";
+  document.getElementById("stats-heading").textContent = "Stats";
+
+  const picking = list.kind === "collection";
+  stage.dataset.view = picking ? "collections" : "tables";
+  if (picking) drawCollection(list.current);
+  else drawTable(list.current, list.cursor);
+}
+
+function drawTable(entry, index) {
+  const { game, table, assets } = entry;
+  setName(game.name);
+
+  wheelEl.replaceChildren(...(entry.media.includes("wheel") ? [image(vpin.getMediaURL(index, "wheel"))] : []));
+  drawRating(entry);
+
+  authorsEl.textContent = table.authors.join(", ");
+  authorsEl.hidden = table.authors.length === 0;
+  metaEl.textContent = [game.year, game.manufacturer, game.type].filter(Boolean).join(" / ");
+
+  drawPreview(entry, index);
+  drawFlyer(entry, index);
+  drawMark(entry, index);
+  drawBackdrop(entry.media.includes("backglass") ? vpin.getImageURL(index, "backglass") : "");
+
+  drawTags(featuresEl, [
+    ["Nfozzy", table.detects.nfozzy],
+    ["Fleep", table.detects.fleep],
+    ["SSF", table.detects.ssf],
+    ["FastFlips", table.detects.fastflips],
+    ["LUT", table.detects.lut],
+    ["Scorbit", table.detects.scorbit],
+    ["FlexDMD", table.detects.flex],
+  ]);
+  drawTags(addonsEl, [
+    ["AltSound", assets.alt_sound],
+    ["AltColor", assets.alt_color],
+    ["PuP-Pack", assets.pup_pack],
+  ]);
+  drawStats(game.user || {});
+}
+
+function drawCollection(row) {
+  setName(row.label);
+  wheelEl.replaceChildren();
+  ratingEl.hidden = true;
+  authorsEl.textContent = "";
+  // A collection that did not resolve, or a remote library, has no count.
+  const count = row.table_count;
+  metaEl.textContent = Number.isFinite(count) ? `${count} ${count === 1 ? "Table" : "Tables"}` : "";
+
+  const art = row.image_url || (row.game_wheel_urls || [])[0] || "";
+  newPreviewToken();
+  showLayer(art ? image(art) : fallbackNode(), art ? "load" : "now");
+  flyerEl.hidden = true;
+  markEl.replaceChildren();
+  drawBackdrop("");
+}
+
+// A long name is set smaller so two lines still hold it.
+function setName(text) {
+  nameEl.textContent = text;
+  nameEl.dataset.long = String(text.length > LONG_NAME);
+}
+
+function image(url) {
+  const node = document.createElement("img");
+  node.alt = "";
+  node.src = url;
+  return node;
+}
+
+// VPinPlay's community rating, which core keeps on the entry: out of five, with the number
+// of ratings behind it.
+function drawRating(entry) {
+  const found = entry.ext && entry.ext.vpinplay;
+  const count = found ? Number(found.ratingCount) : 0;
+  const score = found ? Number(found.cumulativeRating) : 0;
+  if (!(count > 0) || !(score > 0)) {
+    ratingEl.hidden = true;
+    return;
+  }
+  const stars = "★".repeat(Math.round(score)) + "☆".repeat(5 - Math.round(score));
+  ratingEl.replaceChildren(textNode("span", "VPinPlay"), textNode("span", stars, "rating-stars"));
+  ratingEl.title = `${score.toFixed(1)} / 5 (${count})`;
+  ratingEl.hidden = false;
+}
+
+function textNode(tag, text, className) {
+  const node = document.createElement(tag);
+  node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
+// Every tag is drawn and the ones the table lacks are dimmed, so the row reads the same
+// from table to table.
+function drawTags(listEl, tags) {
+  listEl.replaceChildren(...tags.map(([label, on]) => {
+    const tag = document.createElement("li");
+    tag.textContent = label;
+    tag.classList.toggle("on", Boolean(on));
+    return tag;
+  }));
+}
+
+function drawStats(user) {
+  const rating = Number(user.rating) || 0;
+  const minutes = Math.round((Number(user.play_time_seconds) || 0) / 60);
+  const last = user.last_played ? new Date(user.last_played) : null;
+  const rows = [
+    [vpin.t("frontend.theme.my_rating", "My Rating"),
+      rating > 0 ? "★".repeat(rating) + "☆".repeat(Math.max(0, 5 - rating)) : "-"],
+    ["Plays", String(Number(user.play_count) || 0)],
+    ["Minutes", String(minutes)],
+    ["Last Played", last && !Number.isNaN(last.getTime()) ? last.toLocaleDateString() : "-"],
+  ];
+  statsEl.replaceChildren(...rows.map(([label, value]) => {
+    const row = document.createElement("div");
+    row.append(textNode("dt", label), textNode("dd", value));
+    return row;
+  }));
+}
+
+// --- The preview --------------------------------------------------------------------
+// The playfield picture shows at once and the playfield video replaces it a moment later,
+// so stepping quickly through the list never starts a video. Each new layer fades in over
+// the ones already there. The pictures and the video are shown as stored: contained, not
+// turned.
+
+let previewToken = 0;
+let videoTimer = 0;
+
+function newPreviewToken() {
+  clearTimeout(videoTimer);
+  previewToken += 1;
+  for (const layer of previewEl.querySelectorAll(".entering")) discard(layer);
+  return previewToken;
+}
+
+function drawPreview(entry, index) {
+  const token = newPreviewToken();
+  const video = option("enable_table_video", true) && entry.media.includes("playfield_video");
+  // getImageURL has no FSS fallback: a table with only an FSS picture would get the
+  // placeholder.
+  const still = ["playfield", "playfield_fss"].find((kind) => entry.media.includes(kind));
+
+  if (still) {
+    const node = image(vpin.getImageURL(index, still));
+    // A picture that will not load must not leave the last table's art on screen.
+    node.addEventListener("error", () => {
+      if (token === previewToken) showLayer(fallbackNode(), "now", token);
+    }, { once: true });
+    showLayer(node, "load");
+  } else {
+    showLayer(fallbackNode(), "now");
+  }
+
+  if (!video) return;
+  videoTimer = setTimeout(() => {
+    if (token !== previewToken) return;
+    const node = videoNode(vpin.getVideoURL(index, "playfield"));
+    showLayer(node, "loadeddata", token);
+  }, VIDEO_DELAY_MS);
+}
+
+function videoNode(url) {
+  const node = document.createElement("video");
+  Object.assign(node, { src: url, autoplay: true, loop: true, muted: true, playsInline: true });
+  return node;
+}
+
+function fallbackNode() {
+  const node = document.createElement("div");
+  node.className = "art-fallback";
+  node.textContent = "No preview";
+  return node;
+}
+
+// The node waits, invisible, until `event` says it has something to show.
+function showLayer(node, event, token = previewToken) {
+  const layer = document.createElement("div");
+  layer.className = "layer entering";
+  layer.appendChild(node);
+  previewEl.appendChild(layer);
+
+  // A layer retires only the ones under it. The video is added after the picture, so a
+  // picture that loads late never takes down a video that loaded first.
+  const reveal = () => {
+    if (token !== previewToken || !layer.isConnected) return;
+    for (let old = layer.previousElementSibling; old; old = old.previousElementSibling) {
+      if (!old.classList.contains("entering") && !old.classList.contains("exiting")) retire(old);
+    }
+    layer.offsetWidth;               // so the fade starts from the hidden look
+    layer.classList.remove("entering");
+  };
+  if (event === "now") requestAnimationFrame(reveal);
+  else node.addEventListener(event, reveal, { once: true });
+  node.addEventListener("error", () => discard(layer), { once: true });
+}
+
+function retire(layer) {
+  layer.classList.add("exiting");
+  setTimeout(() => discard(layer), FADE_MS);
+}
+
+// A removed video is told to stop downloading, or it would carry on until collected.
+function discard(layer) {
+  for (const video of layer.querySelectorAll("video")) {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  }
+  layer.remove();
+}
+
+// Beside the preview, when Show the flyer is on and the table has one.
+function drawFlyer(entry, index) {
+  const wanted = option("showFlyer", false) && entry.media.includes("flyer");
+  flyerEl.hidden = !wanted;
+  flyerEl.replaceChildren(...(wanted ? [image(vpin.getImageURL(index, "flyer"))] : []));
+}
+
+// The backglass video above the list, or its picture. The picture shows first and the
+// video follows, as in the preview.
+function drawMark(entry, index) {
+  const hasImage = entry.media.includes("backglass");
+  markEl.replaceChildren(...(hasImage ? [image(vpin.getImageURL(index, "backglass"))] : []));
+
+  // A tall screen hides the header, so it is not worth playing a video there.
+  if (getComputedStyle(markEl).display === "none") return;
+  if (!option("enable_selector_header_bg_video", true) || !entry.media.includes("backglass_video")) return;
+  const token = previewToken;
+  setTimeout(() => {
+    if (token !== previewToken) return;
+    const node = videoNode(vpin.getVideoURL(index, "backglass"));
+    node.addEventListener("loadeddata", () => {
+      if (token === previewToken) markEl.replaceChildren(node);
+      else {
+        node.removeAttribute("src");
+        node.load();
+      }
+    }, { once: true });
+  }, VIDEO_DELAY_MS);
+}
+
+// --- 4. The list --------------------------------------------------------------------
+// Nineteen rows with the selection in the middle one. A list shorter than that leaves the
+// outer rows empty and keeps the selection in the middle.
+
+const ROWS = 19;
+const MIDDLE = 9;
+
+const listEl = document.getElementById("list");
+const scanEl = document.createElement("div");
+scanEl.className = "scan";
+
+const rows = Array.from({ length: ROWS }, () => {
+  const row = document.createElement("li");
+  const text = document.createElement("span");
+  row.appendChild(text);
+  listEl.appendChild(row);
+  return { row, text };
 });
 
+function drawList(list) {
+  const shown = Math.min(ROWS, list.length);
+  const before = Math.min(MIDDLE, Math.floor((shown - 1) / 2));
+  const after = shown - 1 - before;
+
+  rows.forEach(({ row, text }, slot) => {
+    const offset = slot - MIDDLE;
+    const used = offset >= -before && offset <= after;
+    row.className = used ? (offset === 0 ? "active" : Math.abs(offset) <= 2 ? "near" : "") : "";
+    text.textContent = used ? labelOf(list, list.indexAfter(offset)) : "";
+  });
+  rows[MIDDLE].row.appendChild(scanEl);
+}
+
+function labelOf(list, index) {
+  const item = list.items[index];
+  return list.kind === "collection" ? item.label : item.game.name;
+}
+
+// --- 5. Motion ----------------------------------------------------------------------
+// GSAP moves the page on a step or a jump, and two ambient loops run for as long as the
+// page does. Without GSAP the page still draws.
+
+function startAmbientMotion() {
+  if (!window.gsap) return;
+  gsap.to(".side-glow", { xPercent: 8, yPercent: -4, duration: 6, ease: "sine.inOut", yoyo: true, repeat: -1 });
+  gsap.fromTo(
+    ".ripple",
+    { scale: 0.2, opacity: 0.7 },
+    { scale: 1.6, opacity: 0, duration: 4.8, ease: "power1.out", repeat: -1, stagger: 0.8 },
+  );
+}
+
+function animateStep(direction) {
+  if (!window.gsap) return;
+  const sign = direction === "previous" ? -1 : 1;
+  const row = listEl.clientHeight / ROWS;
+  gsap.fromTo(listEl, { y: sign * row }, { y: 0, duration: 0.18, ease: "power2.out" });
+  gsap.fromTo(scanEl, { xPercent: -120, opacity: 0.9 }, { xPercent: 120, opacity: 0, duration: 0.45, ease: "power1.out" });
+  animateIn();
+}
+
+function animateIn() {
+  if (!window.gsap) return;
+  gsap.fromTo(".heading-copy", { opacity: 0, x: -12 }, { opacity: 1, x: 0, duration: 0.3, ease: "power2.out", overwrite: true });
+  gsap.fromTo(".preview-stack", { opacity: 0.6, scale: 0.985 }, { opacity: 1, scale: 1, duration: 0.3, ease: "power2.out", overwrite: true });
+  gsap.fromTo(".tag-panel", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.28, ease: "power2.out", stagger: 0.05, overwrite: true });
+}
+
+function animateEnter() {
+  if (!window.gsap) return;
+  gsap.fromTo(themeEl, { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power1.out" });
+}
+
+// --- Messages -----------------------------------------------------------------------
+// Core needs to see every message first: it keeps the selection, the audio and the
+// loading indicator in step with them. After that the theme draws.
+//
+// reason says why the selection moved: "step" is one press, "page" a jump, "enter" a
+// first draw.
+
 async function receiveEvent(message) {
-    await vpin.handleEvent(message);
+  await vpin.handleEvent(message);
 
-    if (message.type === "TableIndexUpdate") {
-        currentTableIndex = message.index;
-        updateScreen();
-    }
-    else if (message.type === "TableLaunching") {
-        fadeOut();
-    } else if (message.type === "TableLaunchComplete") {
-        fadeIn();
-    } else if (message.type === "RemoteLaunching") {
-        showRemoteLaunchOverlay(message.table_name);
-        fadeOut();
-    } else if (message.type === "RemoteLaunchComplete") {
-        hideRemoteLaunchOverlay();
-        fadeIn();
-    } else if (message.type === "TableDataChange") {
-        currentTableIndex = message.index;
-        updateScreen();
-    }
+  if (message.type === "TableIndexUpdate") {
+    draw(message);
+  } else if (message.type === "TableDataChange") {
+    draw({ reason: "enter" });
+  }
 }
 
-async function handleInput(input) {
-    switch (input) {
-        case "joyleft":
-            lastMoveDirection = -1;
-            currentTableIndex = wrapIndex(currentTableIndex - 1, vpin.tableData.length);
-            updateScreen();
-            vpin.sendMessageToAllWindows({
-                type: "TableIndexUpdate",
-                index: currentTableIndex
-            });
-            break;
-        case "joyright":
-            lastMoveDirection = 1;
-            currentTableIndex = wrapIndex(currentTableIndex + 1, vpin.tableData.length);
-            updateScreen();
-            vpin.sendMessageToAllWindows({
-                type: "TableIndexUpdate",
-                index: currentTableIndex
-            });
-            break;
-        case "joyselect":
-            vpin.stopTableAudio();
-            vpin.sendMessageToAllWindows({ type: "TableLaunching" });
-            await fadeOut();
-            await vpin.launchTable(currentTableIndex);
-            break;
-        case "joyback":
-            break;
-    }
+function draw(message) {
+  const list = vpin.activeList();
+  drawSelection(list);
+  drawList(list);
+  if (list.length === 0) return;
+  if (message.reason === "step") animateStep(message.direction);
+  else if (message.reason === "page") animateIn();
+  else if (message.reason === "enter") animateEnter();
 }
 
-function updateScreen() {
-    if (windowName === "table") {
-        updateTableWindow();
-        vpin.playTableAudio(currentTableIndex);
-        preloadNearbyMedia();
-    } else if (windowName === "bg") {
-        updateBGWindow();
-    } else if (windowName === "dmd") {
-        updateDMDWindow();
-    }
-}
-
-function updateTableWindow() {
-    const container = document.getElementById("rootContainer");
-    tableView = ensureTableView(container);
-
-    if (!vpin.tableData || vpin.tableData.length === 0) {
-        tableView.theme.style.display = "none";
-        tableView.emptyState.style.display = "flex";
-        return;
-    }
-
-    tableView.theme.style.display = "";
-    tableView.emptyState.style.display = "none";
-
-    const data = getDisplayData(currentTableIndex);
-    updateBackdrop(tableView, data.bgUrl);
-    updateSystemHeader(tableView, data);
-    updateTitleBlock(tableView, data);
-    updateMetadata(tableView, data);
-    updatePreviewFooter(tableView, data);
-    updateFeatureStrip(tableView.featureStrip, data.features);
-    updateFeatureStrip(tableView.addonStrip, data.addons);
-    updatePreview(tableView.previewPanel, data, isVideoEnabled("enable_table_video", true));
-    updateTableList(tableView);
-    animateTableSelection(tableView);
-
-    lastRenderedTableIndex = currentTableIndex;
-    lastMoveDirection = 0;
-}
-
-function updateBGWindow() {
-    const container = document.getElementById("rootContainer");
-    if (!vpin.tableData || vpin.tableData.length === 0) {
-        container.innerHTML = "";
-        return;
-    }
-
-    const bgUrl = vpin.getImageURL(currentTableIndex, "bg");
-    const bgVideoUrl = vpin.getVideoURL(currentTableIndex, "bg");
-    renderWindowMedia(container, bgUrl, bgVideoUrl, "Backglass");
-}
-
-function updateDMDWindow() {
-    const container = document.getElementById("rootContainer");
-    if (!vpin.tableData || vpin.tableData.length === 0) {
-        container.innerHTML = "";
-        return;
-    }
-
-    const dmdUrl = vpin.getImageURL(currentTableIndex, "dmd");
-    const dmdVideoUrl = vpin.getVideoURL(currentTableIndex, "dmd");
-    renderWindowMedia(container, dmdUrl, dmdVideoUrl, "DMD");
-}
-
-function ensureTableView(container) {
-    if (tableView && tableView.container === container) return tableView;
-
-    container.innerHTML = "";
-
-    const emptyState = document.createElement("div");
-    emptyState.className = "es-empty-state";
-    emptyState.textContent = "No tables found";
-    emptyState.style.display = "none";
-
-    const theme = document.createElement("div");
-    theme.className = "es-theme";
-    theme.innerHTML = `
-        <div class="es-backdrop"></div>
-        <div class="es-atmosphere"></div>
-        <div class="es-frame-lines"></div>
-        <div class="es-screen-title">
-            <div class="es-screen-title-wheel"></div>
-            <div class="es-screen-title-copy">
-                <h1 class="es-title-text"></h1>
-                <div class="es-author-text"></div>
-                <div class="es-preview-meta"></div>
-            </div>
-        </div>
-        <div class="es-main-shell">
-            <section class="es-left-stage"></section>
-            <section class="es-center-stage">
-                <div class="es-focus-stage">
-                    <div class="es-preview-column">
-                        <div class="es-preview-stack">
-                            <div class="es-preview-panel"></div>
-                        </div>
-                        <div class="es-badge-band">
-                            <section class="es-tag-panel">
-                                <h2 class="es-tag-title">Features</h2>
-                                <div class="es-tag-strip es-feature-strip"></div>
-                            </section>
-                            <section class="es-tag-panel">
-                                <h2 class="es-tag-title">Add-ons</h2>
-                                <div class="es-tag-strip es-addon-strip"></div>
-                            </section>
-                        </div>
-                    </div>
-                    <div class="es-meta-grid"></div>
-                </div>
-            </section>
-            <aside class="es-right-stage">
-                <div class="es-right-stage-glow"></div>
-                <div class="es-right-stage-ripples">
-                    <div class="es-right-stage-ripple"></div>
-                    <div class="es-right-stage-ripple"></div>
-                    <div class="es-right-stage-ripple"></div>
-                    <div class="es-right-stage-ripple"></div>
-                    <div class="es-right-stage-ripple"></div>
-                    <div class="es-right-stage-ripple"></div>
-                </div>
-                <div class="es-system-panel">
-                    <div class="es-system-mark"><img class="es-system-mark-image" alt=""></div>
-                </div>
-                <div class="es-list">
-                    <div class="es-list-selector">
-                        <div class="es-list-selector-outline"></div>
-                        <div class="es-list-selector-corner tl"></div>
-                        <div class="es-list-selector-corner tr"></div>
-                        <div class="es-list-selector-corner bl"></div>
-                        <div class="es-list-selector-corner br"></div>
-                    </div>
-                    <div class="es-list-track"></div>
-                </div>
-            </aside>
-        </div>
-    `;
-
-    container.appendChild(emptyState);
-    container.appendChild(theme);
-
-    tableView = {
-        container,
-        emptyState,
-        theme,
-        backdrop: theme.querySelector(".es-backdrop"),
-        screenTitle: theme.querySelector(".es-screen-title"),
-        leftStage: theme.querySelector(".es-left-stage"),
-        centerStage: theme.querySelector(".es-center-stage"),
-        focusStage: theme.querySelector(".es-focus-stage"),
-        bottomFooter: theme.querySelector(".es-bottom-footer"),
-        previewColumn: theme.querySelector(".es-preview-column"),
-        previewStack: theme.querySelector(".es-preview-stack"),
-        rightStage: theme.querySelector(".es-right-stage"),
-        rightStageGlow: theme.querySelector(".es-right-stage-glow"),
-        rightStageRipples: [...theme.querySelectorAll(".es-right-stage-ripple")],
-        systemMark: theme.querySelector(".es-system-mark"),
-        headerWheel: theme.querySelector(".es-screen-title-wheel"),
-        titleText: theme.querySelector(".es-title-text"),
-        authorText: theme.querySelector(".es-author-text"),
-        metaGrid: theme.querySelector(".es-meta-grid"),
-        previewPanel: theme.querySelector(".es-preview-panel"),
-        previewMeta: theme.querySelector(".es-preview-meta"),
-        featureStrip: theme.querySelector(".es-feature-strip"),
-        addonStrip: theme.querySelector(".es-addon-strip"),
-        listSelector: theme.querySelector(".es-list-selector"),
-        listTrack: theme.querySelector(".es-list-track")
-    };
-
-    return tableView;
-}
-
-function getDisplayData(index) {
-    const table = vpin.getTableMeta(index);
-    const info = table.meta.Info || {};
-    const vpx = table.meta.VPXFile || {};
-
-    const title = info.Title || vpx.filename || table.tableDirName || "Unknown Table";
-    const manufacturer = info.Manufacturer || vpx.manufacturer || "Unknown";
-    const year = info.Year || vpx.year || "";
-    const authors = formatAuthors(info.Authors);
-    const type = info.Type || vpx.type || "Pinball";
-    const plays = coalesce(info.playcount, info.PlayCount, vpx.playcount, vpx.PlayCount, "Unknown");
-    const lastPlayed = coalesce(info.lastplayed, info.LastPlayed, vpx.lastplayed, vpx.LastPlayed, "Unknown");
-    const rating = coalesce(info.rating, info.Rating, vpx.rating, vpx.Rating, "N/A");
-
-    return {
-        index,
-        title,
-        manufacturer,
-        year: year ? String(year) : "Unknown",
-        authors,
-        type,
-        plays: String(plays),
-        lastPlayed: formatLastPlayed(lastPlayed),
-        rating: String(rating),
-        synopsis: getSynopsis(info, vpx, title, manufacturer, year, type),
-        wheelUrl: vpin.getImageURL(index, "wheel"),
-        cabUrl: vpin.getImageURL(index, "cab"),
-        tableUrl: vpin.getImageURL(index, "table"),
-        bgUrl: vpin.getImageURL(index, "bg"),
-        bgVideoUrl: vpin.getVideoURL(index, "bg"),
-        dmdUrl: vpin.getImageURL(index, "dmd"),
-        tableVideoUrl: vpin.getVideoURL(index, "table"),
-        audioUrl: vpin.getAudioURL(index),
-        features: buildFlags(vpx, [
-            { key: "detectnfozzy", label: "Nfozzy" },
-            { key: "detectfleep", label: "Fleep" },
-            { key: "detectssf", label: "SSF" },
-            { key: "detectfastflips", label: "FastFlips" },
-            { key: "detectlut", label: "LUT" },
-            { key: "detectscorebit", label: "ScoreBit" },
-            { key: "detectflex", label: "FlexDMD" }
-        ]),
-        addons: buildFlags(vpx, [
-            { key: "altSoundExists", label: "AltSound" },
-            { key: "altColorExists", label: "AltColor" },
-            { key: "pupPackExists", label: "PuP-Pack" }
-        ])
-    };
-}
-
-function isVideoEnabled(optionName, fallback = true) {
-    if (!config || typeof config !== "object") return fallback;
-    if (!(optionName in config)) return fallback;
-    return Boolean(config[optionName]);
-}
-
-function createBackdropMedia(bgUrl) {
-    if (hasUsableMedia(bgUrl)) {
-        const image = document.createElement("img");
-        image.className = "es-backdrop-media";
-        image.src = bgUrl;
-        image.alt = "";
-        return image;
-    }
-
-    return null;
-}
-
-function updateBackdrop(view, bgUrl) {
-    const targetUrl = bgUrl;
-    if (!hasUsableMedia(targetUrl)) {
-        view.backdrop.replaceChildren();
-        delete view.backdrop.dataset.url;
-        return;
-    }
-
-    const currentUrl = view.backdrop.dataset.url || "";
-    if (currentUrl === targetUrl) return;
-
-    const media = createBackdropMedia(bgUrl);
-    if (!media) {
-        view.backdrop.replaceChildren();
-        delete view.backdrop.dataset.url;
-        return;
-    }
-
-    const transitionToken = String(Date.now()) + Math.random().toString(16).slice(2);
-    view.backdrop.dataset.transitionToken = transitionToken;
-
-    const commitBackdropSwap = () => {
-        if (view.backdrop.dataset.transitionToken !== transitionToken) return;
-        const fadeLayer = document.createElement("div");
-        fadeLayer.className = "es-backdrop-fade";
-        fadeLayer.appendChild(media);
-        view.backdrop.appendChild(fadeLayer);
-
-        requestAnimationFrame(() => fadeLayer.classList.add("is-active"));
-        setTimeout(() => {
-            if (view.backdrop.dataset.transitionToken !== transitionToken) return;
-            view.backdrop.replaceChildren(media);
-            view.backdrop.dataset.url = targetUrl;
-        }, 260);
-    };
-
-    const finalize = () => {
-        if (view.backdrop.dataset.pendingUrl !== targetUrl) return;
-        delete view.backdrop.dataset.pendingUrl;
-        commitBackdropSwap();
-    };
-
-    view.backdrop.dataset.pendingUrl = targetUrl;
-
-    media.addEventListener("load", finalize, { once: true });
-    media.addEventListener("error", () => {
-        if (view.backdrop.dataset.pendingUrl === targetUrl) {
-            delete view.backdrop.dataset.pendingUrl;
-        }
-    }, { once: true });
-
-    if (media.complete) {
-        finalize();
-    } else if (typeof media.decode === "function") {
-        media.decode().then(finalize).catch(() => {});
-    }
-}
-
-function updateTitleBlock(view, data) {
-    view.titleText.textContent = data.title;
-    view.authorText.textContent = data.authors;
-}
-
-function updateSystemHeader(view, data) {
-    if (!view.systemMark) return;
-
-    view.systemMark.replaceChildren();
-
-    if (isVideoEnabled("enable_selector_header_bg_video", true) && hasUsableMedia(data.bgVideoUrl)) {
-        const video = document.createElement("video");
-        video.className = "es-system-mark-media";
-        video.src = data.bgVideoUrl;
-        video.poster = hasUsableMedia(data.bgUrl) ? data.bgUrl : "";
-        video.autoplay = true;
-        video.loop = true;
-        video.muted = true;
-        video.playsInline = true;
-        view.systemMark.appendChild(video);
-        return;
-    }
-
-    if (hasUsableMedia(data.bgUrl)) {
-        const image = document.createElement("img");
-        image.className = "es-system-mark-media";
-        image.src = data.bgUrl;
-        image.alt = `${data.title} backglass`;
-        view.systemMark.appendChild(image);
-    }
-}
-
-function updateMetadata(view, data) {
-    view.metaGrid.innerHTML = "";
-}
-
-function updatePreviewFooter(view, data) {
-    view.headerWheel.innerHTML = "";
-
-    const showFallback = () => {
-        view.headerWheel.innerHTML = "";
-        const fallback = document.createElement("div");
-        fallback.className = "es-preview-wheel-fallback";
-        fallback.textContent = data.title;
-        view.headerWheel.appendChild(fallback);
-    };
-
-    if (hasUsableMedia(data.wheelUrl)) {
-        const wheel = document.createElement("img");
-        wheel.src = data.wheelUrl;
-        wheel.alt = `${data.title} wheel`;
-        wheel.onerror = showFallback;
-        view.headerWheel.appendChild(wheel);
-    } else {
-        showFallback();
-    }
-
-    const metaParts = [data.year, data.manufacturer, data.type]
-        .map((value) => String(value || "").trim())
-        .filter((value) => value && value !== "Unknown");
-
-    view.previewMeta.textContent = metaParts.join("  /  ");
-}
-
-function updateFeatureStrip(container, items) {
-    container.innerHTML = "";
-    items.forEach((item) => {
-        const tag = document.createElement("span");
-        tag.className = `es-tag${item.active ? " active" : ""}`;
-        tag.textContent = item.label;
-        container.appendChild(tag);
-    });
-}
-
-function updatePreview(container, data, allowVideo = true) {
-    const currentLayer = container.querySelector(".es-preview-layer");
-    const token = ++previewSwapToken;
-    const incoming = document.createElement("div");
-    incoming.className = "es-preview-layer is-entering";
-    incoming.dataset.url = data.tableUrl;
-
-    const poster = document.createElement("img");
-    poster.src = data.tableUrl;
-    poster.alt = `${data.title} preview`;
-    poster.onerror = () => {
-        poster.removeAttribute("src");
-    };
-    incoming.appendChild(poster);
-    container.appendChild(incoming);
-
-    const activate = () => {
-        if (token !== previewSwapToken) return;
-        requestAnimationFrame(() => {
-            incoming.classList.remove("is-entering");
-            if (currentLayer) {
-                currentLayer.classList.add("is-exiting");
-                setTimeout(() => currentLayer.remove(), 220);
-            }
-        });
-    };
-
-    if (poster.complete) {
-        activate();
-    } else {
-        poster.addEventListener("load", activate, { once: true });
-        poster.addEventListener("error", activate, { once: true });
-    }
-
-    clearTimeout(mediaDelayTimer);
-    mediaDelayTimer = setTimeout(() => {
-        if (token !== previewSwapToken || !allowVideo || !hasUsableMedia(data.tableVideoUrl)) return;
-
-        const video = document.createElement("video");
-        video.src = data.tableVideoUrl;
-        video.poster = data.tableUrl;
-        video.autoplay = true;
-        video.loop = true;
-        video.muted = true;
-        video.playsInline = true;
-        video.addEventListener("loadeddata", () => {
-            if (token !== previewSwapToken || !incoming.isConnected) return;
-            incoming.replaceChildren(video);
-        }, { once: true });
-        video.onerror = () => {};
-        video.load();
-    }, 260);
-}
-
-function updateTableList(view) {
-    const count = vpin.getTableCount();
-    const visibleCount = 19;
-    const centerSlot = Math.floor(visibleCount / 2);
-
-    if (view.listTrack.children.length !== visibleCount) {
-        view.listTrack.innerHTML = "";
-        for (let index = 0; index < visibleCount; index += 1) {
-            const item = document.createElement("div");
-            item.className = "es-list-item";
-            const label = document.createElement("span");
-            label.className = "es-list-item-label";
-            const scan = document.createElement("span");
-            scan.className = "es-list-item-scan";
-            item.append(label, scan);
-            view.listTrack.appendChild(item);
-        }
-    }
-
-    Array.from(view.listTrack.children).forEach((item, position) => {
-        const index = wrapIndex(currentTableIndex + position - centerSlot, count);
-        const table = vpin.getTableMeta(index);
-        const info = table.meta.Info || {};
-        const vpx = table.meta.VPXFile || {};
-        const title = info.Title || vpx.filename || table.tableDirName || "Unknown Table";
-        const label = item.querySelector(".es-list-item-label");
-        label.textContent = title;
-        item.classList.toggle("active", position === centerSlot);
-        item.classList.toggle("near", Math.abs(position - centerSlot) <= 2 && position !== centerSlot);
-    });
-    view.listTrack.style.transform = "none";
-}
-
-function animateTableSelection(view) {
-    if (!window.gsap) return;
-
-    const direction = lastMoveDirection === 0 ? 1 : lastMoveDirection;
-    const headerTargets = [view.headerWheel, view.titleText, view.authorText, view.previewMeta].filter(Boolean);
-    const badgePanels = view.theme.querySelectorAll(".es-tag-panel");
-    const badgeTargets = Array.from(badgePanels);
-    const badgeChildren = badgeTargets.flatMap((panel) => {
-        const title = panel.querySelector(".es-tag-title");
-        const tags = Array.from(panel.querySelectorAll(".es-tag"));
-        return [title, ...tags].filter(Boolean);
-    });
-
-    gsap.killTweensOf([
-        view.leftStage,
-        view.centerStage,
-        view.rightStage,
-        view.titleText,
-        view.authorText,
-        view.previewMeta,
-        view.metaGrid,
-        view.focusStage,
-        view.previewStack,
-        ...badgeTargets,
-        ...badgeChildren
-    ]);
-    ensureSelectorPanelEffects(view);
-
-    const firstPaint = lastRenderedTableIndex === -1;
-    if (firstPaint) {
-        gsap.fromTo(
-            [view.leftStage, view.centerStage, view.rightStage],
-            { opacity: 0, y: 24 },
-            { opacity: 1, y: 0, duration: 0.68, ease: "power2.out", stagger: 0.08 }
-        );
-        return;
-    }
-
-    gsap.fromTo(
-        headerTargets,
-        {
-            opacity: 0.16,
-            x: direction * 14,
-            y: -4,
-            scale: 0.985
-        },
-        {
-            opacity: 1,
-            x: 0,
-            y: 0,
-            scale: 1,
-            duration: 0.3,
-            ease: "power2.out",
-            stagger: 0.08
-        }
-    );
-
-    gsap.fromTo(
-        view.previewStack,
-        {
-            opacity: 0.22,
-            x: direction * 18,
-            scale: 0.985,
-            rotate: direction * 0.25
-        },
-        {
-            opacity: 1,
-            x: 0,
-            scale: 1,
-            rotate: 0,
-            duration: 0.28,
-            ease: "power3.out"
-        }
-    );
-
-    gsap.fromTo(
-        badgeTargets,
-        {
-            opacity: 0.08,
-            y: 28,
-            x: direction * 18
-        },
-        {
-            opacity: 1,
-            y: 0,
-            x: 0,
-            duration: 0.62,
-            ease: "power2.out",
-            stagger: 0.1
-        }
-    );
-
-    gsap.fromTo(
-        badgeChildren,
-        {
-            opacity: 0,
-            y: 18
-        },
-        {
-            opacity: 1,
-            y: 0,
-            duration: 0.48,
-            ease: "power2.out",
-            stagger: 0.03,
-            delay: 0.14
-        }
-    );
-
-    const activeItem = view.listTrack.querySelector(".es-list-item.active");
-    if (activeItem) {
-        const scan = activeItem.querySelector(".es-list-item-scan");
-        gsap.fromTo(
-            activeItem,
-            {
-                x: lastMoveDirection > 0 ? 14 : -14,
-                scaleX: 0.97,
-                scaleY: 0.95,
-                filter: "brightness(1.35)"
-            },
-            {
-                x: 0,
-                scaleX: 1,
-                scaleY: 1,
-                filter: "brightness(1)",
-                duration: 0.24,
-                ease: "power2.out"
-            }
-        );
-        if (scan) {
-            gsap.killTweensOf(scan);
-            gsap.fromTo(
-                scan,
-                { xPercent: -180, opacity: 0 },
-                {
-                    xPercent: 180,
-                    opacity: 1,
-                    duration: 0.52,
-                    ease: "power2.out"
-                }
-            );
-        }
-    }
-
-    if (view.listSelector) {
-        gsap.killTweensOf(view.listSelector);
-        gsap.set(view.listSelector, {
-            boxShadow: "0 0 24px rgba(255, 198, 106, 0.24), inset 0 0 0 1px rgba(255, 244, 213, 0.5)",
-            opacity: 1
-        });
-    }
-}
-
-function ensureSelectorPanelEffects(view) {
-    if (!window.gsap) return;
-
-    if (view.rightStageGlow && !rightStageDriftTween) {
-        gsap.set(view.rightStageGlow, {
-            xPercent: -12,
-            yPercent: -8,
-            scale: 0.88,
-            opacity: 0.5
-        });
-
-        rightStageDriftTween = gsap.to(view.rightStageGlow, {
-            xPercent: 12,
-            yPercent: 10,
-            scale: 1.16,
-            opacity: 0.9,
-            duration: 4.8,
-            ease: "sine.inOut",
-            repeat: -1,
-            yoyo: true
-        });
-    }
-
-    if (Array.isArray(view.rightStageRipples) && view.rightStageRipples.length && rippleTimelines.length === 0) {
-        view.rightStageRipples.forEach((ripple, index) => {
-            const left = 18 + Math.random() * 64;
-            const top = 18 + Math.random() * 66;
-            const baseScale = 0.12 + Math.random() * 0.16;
-            const maxScale = 2.1 + Math.random() * 1.5;
-            const duration = 1.8 + Math.random() * 1.9;
-            const intro = 0.18 + Math.random() * 0.24;
-
-            gsap.set(ripple, {
-                left: `${left}%`,
-                top: `${top}%`,
-                scale: baseScale,
-                opacity: 0,
-                xPercent: -50,
-                yPercent: -50
-            });
-
-            const timeline = gsap.timeline({
-                repeat: -1,
-                delay: index * 0.45 + Math.random() * 0.6
-            });
-
-            timeline
-                .to(ripple, {
-                    opacity: 1,
-                    duration: intro,
-                    ease: "sine.out"
-                })
-                .to(ripple, {
-                    scale: maxScale,
-                    opacity: 0,
-                    duration,
-                    ease: "power1.out"
-                }, 0);
-
-            rippleTimelines.push(timeline);
-        });
-    }
-}
-
-function preloadNearbyMedia() {
-    if (!vpin.tableData || vpin.getTableCount() === 0) return;
-
-    const indices = [
-        currentTableIndex,
-        wrapIndex(currentTableIndex - 1, vpin.getTableCount()),
-        wrapIndex(currentTableIndex + 1, vpin.getTableCount())
-    ];
-
-    indices.forEach((index) => {
-        preloadImage(vpin.getImageURL(index, "table"));
-        preloadImage(vpin.getImageURL(index, "bg"));
-        preloadImage(vpin.getImageURL(index, "wheel"));
-        preloadImage(vpin.getImageURL(index, "cab"));
-        preloadImage(vpin.getImageURL(index, "dmd"));
-    });
-}
-
-function preloadImage(url) {
-    if (!hasUsableMedia(url) || mediaPreloadCache.has(url)) return;
-    const img = new Image();
-    img.decoding = "async";
-    img.src = url;
-    const promise = img.decode ? img.decode().catch(() => {}) : Promise.resolve();
-    mediaPreloadCache.set(url, promise);
-    if (mediaPreloadCache.size > 24) {
-        const firstKey = mediaPreloadCache.keys().next().value;
-        mediaPreloadCache.delete(firstKey);
-    }
-}
-
-function buildFlags(vpx, items) {
-    return items.map(({ key, label }) => ({
-        label,
-        active: isTruthyFlag(vpx[key])
-    }));
-}
-
-function getSynopsis(info, vpx, title, manufacturer, year, type) {
-    const direct = [
-        info.Description,
-        info.description,
-        info.Overview,
-        info.overview,
-        info.Notes,
-        info.notes,
-        info.Rules,
-        info.rules,
-        vpx.description,
-        vpx.notes
-    ].find((value) => typeof value === "string" && value.trim());
-
-    if (direct) {
-        return truncateWords(cleanText(direct), 42);
-    }
-
-    const yearText = year ? ` from ${year}` : "";
-    return `${title} is a ${type.toLowerCase()} table by ${manufacturer}${yearText}. Explore the playfield, load the media, and browse the collection with a front-end layout built to spotlight cab art, playfield action, DMD artwork, and table features.`;
-}
-
-function formatAuthors(authors) {
-    if (Array.isArray(authors) && authors.length > 0) return authors.join(", ");
-    if (typeof authors === "string" && authors.trim()) return authors.trim();
-    return "Unknown";
-}
-
-function formatLastPlayed(value) {
-    if (!value || value === "Unknown") return "Unknown";
-    const text = String(value).trim();
-    if (!text) return "Unknown";
-    return text;
-}
-
-function truncateWords(text, limit) {
-    const words = text.split(/\s+/).filter(Boolean);
-    if (words.length <= limit) return text;
-    return `${words.slice(0, limit).join(" ")}...`;
-}
-
-function cleanText(text) {
-    return String(text).replace(/\s+/g, " ").trim();
-}
-
-function isTruthyFlag(value) {
-    return value === true || value === "true" || value === 1 || value === "1";
-}
-
-function hasUsableMedia(url) {
-    return Boolean(url) && !String(url).includes("file_missing");
-}
-
-function renderWindowMedia(container, imageUrl, videoUrl, altText) {
-    const existingMedia = container.querySelector("video, img");
-    const wantsVideo = hasUsableMedia(videoUrl);
-
-    if (existingMedia) {
-        if (existingMedia.tagName === "VIDEO") {
-            existingMedia.pause();
-            existingMedia.removeAttribute("src");
-            existingMedia.load();
-        }
-        existingMedia.remove();
-    }
-
-    if (wantsVideo) {
-        const video = document.createElement("video");
-        video.src = videoUrl;
-        video.poster = hasUsableMedia(imageUrl) ? imageUrl : "";
-        video.autoplay = true;
-        video.loop = true;
-        video.muted = true;
-        video.playsInline = true;
-        video.style.cssText = "width: 100%; height: 100%; object-fit: cover;";
-        video.onerror = () => {
-            if (!hasUsableMedia(imageUrl)) return;
-            const fallback = document.createElement("img");
-            fallback.src = imageUrl;
-            fallback.alt = altText;
-            fallback.style.cssText = "width: 100%; height: 100%; object-fit: cover;";
-            video.replaceWith(fallback);
-        };
-        container.appendChild(video);
-        return;
-    }
-
-    const img = document.createElement("img");
-    img.src = hasUsableMedia(imageUrl) ? imageUrl : "";
-    img.alt = altText;
-    img.style.cssText = "width: 100%; height: 100%; object-fit: cover;";
-    container.appendChild(img);
-}
-
-function coalesce(...values) {
-    for (const value of values) {
-        if (value !== undefined && value !== null && String(value).trim() !== "") {
-            return value;
-        }
-    }
-    return "";
-}
-
-function wrapIndex(index, length) {
-    return (index + length) % length;
-}
-
-function escapeHtml(value) {
-    return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
-}
-
-function fadeOut() {
-    const overlay = document.getElementById("fadeOverlay");
-    if (overlay) overlay.classList.add("show");
-}
-
-function fadeIn() {
-    const overlay = document.getElementById("fadeOverlay");
-    if (overlay) overlay.classList.remove("show");
-}
-
-function showRemoteLaunchOverlay(tableName) {
-    const overlay = document.getElementById("remote-launch-overlay");
-    const nameEl = document.getElementById("remote-launch-table-name");
-    if (overlay && nameEl) {
-        nameEl.textContent = tableName || "Unknown Table";
-        overlay.style.display = "flex";
-    }
-}
-
-function hideRemoteLaunchOverlay() {
-    const overlay = document.getElementById("remote-launch-overlay");
-    if (overlay) overlay.style.display = "none";
-}
+// Last, so every const above is set before start() reads it.
+start();

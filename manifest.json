@@ -1,10 +1,11 @@
 {
   "name": "Texal",
-  "version": "1.4",
+  "version": "2.0.0",
   "author": "superhac",
-  "description": "A desktop pinball showcase theme with media-rich browsing and animated selection flow.",
+  "description": "A copper-lit list of tables beside a framed preview, with the backglass behind it all.",
   "preview_image": "preview.png",
-  "supported_screens": 3,
-  "type": "desktop",
-  "change_log": "smooth table selector"
+  "type": "both",
+  "change_log": "Rebuilt for VPinFE 3.0: core now handles input, audio, preloading, layout, the loading indicator, attract mode and the backglass and score view pages, so the theme is one playfield page. New option: Show the flyer, which also shows a panel of your own stats for the table. The community rating from VPinPlay shows beside the title when a table has one.",
+  "min_vpinfe": "3.0",
+  "windows": ["playfield"]
 }

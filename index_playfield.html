@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VPinFE - Texal</title>
+  <link rel="stylesheet" href="/core/common/vpinfe-style.css" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="/core/common/vpinfe-core.js"></script>
+  <script src="gsap.min.js"></script>
+</head>
+<body>
+  <main class="stage vpinfe-upright" data-view="tables" data-flyer="off">
+
+    <!-- The backglass, drawn twice so one fades into the other. theme.js fills them. -->
+    <div class="backdrop">
+      <img class="backdrop-art" alt="" />
+      <img class="backdrop-art" alt="" />
+    </div>
+    <div class="atmosphere"></div>
+
+    <!-- Everything below is laid out on a fixed 16:9 (or 9:16) box centered in the stage. -->
+    <div id="selection" class="theme">
+
+      <header class="heading">
+        <div id="wheel" class="wheel"></div>
+        <div class="heading-copy">
+          <div class="title-row">
+            <h1 id="name"></h1>
+            <div id="rating" class="rating" hidden></div>
+          </div>
+          <div id="authors" class="authors"></div>
+          <div id="meta" class="meta"></div>
+        </div>
+      </header>
+
+      <div class="shell">
+        <section class="center">
+          <div class="column">
+            <div class="preview-stack">
+              <div class="preview-panel">
+                <!-- theme.js puts the playfield picture or video in here. -->
+                <div id="preview" class="preview"></div>
+                <div id="flyer" class="flyer" hidden></div>
+              </div>
+            </div>
+
+            <div class="badge-band">
+              <section class="tag-panel">
+                <h2 id="features-heading" class="tag-title">Features</h2>
+                <ul id="features" class="tag-strip"></ul>
+              </section>
+              <section class="tag-panel">
+                <h2 id="addons-heading" class="tag-title">Add-ons</h2>
+                <ul id="addons" class="tag-strip"></ul>
+              </section>
+              <section class="tag-panel stats-panel">
+                <h2 id="stats-heading" class="tag-title">Stats</h2>
+                <dl id="stats" class="stats"></dl>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <aside class="side">
+          <div class="side-glow"></div>
+          <div class="side-ripples">
+            <div class="ripple"></div>
+            <div class="ripple"></div>
+            <div class="ripple"></div>
+            <div class="ripple"></div>
+            <div class="ripple"></div>
+            <div class="ripple"></div>
+          </div>
+          <!-- The backglass video, or its picture, above the list. -->
+          <div id="mark" class="mark"></div>
+          <div class="list">
+            <div id="selector" class="selector"></div>
+            <ol id="list" class="list-track"></ol>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <p id="empty" class="empty" hidden></p>
+  </main>
+
+  <div id="overlay-root"></div>
+
+  <script src="theme.js"></script>
+</body>
+</html>
