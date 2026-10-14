@@ -1,0 +1,12 @@
+{
+  "add_ons": "Add-ons",
+  "stats": "Stats",
+  "plays": "Plays",
+  "minutes": "Minutes",
+  "last_played": "Last Played",
+  "no_preview": "No preview",
+  "tables": {
+    "one": "{count} Table",
+    "other": "{count} Tables"
+  }
+}

@@ -99,8 +99,8 @@ function drawSelection(list) {
 
   document.getElementById("features-heading").textContent =
     vpin.t("frontend.theme.detected_features", "Detected Features");
-  document.getElementById("addons-heading").textContent = "Add-ons";
-  document.getElementById("stats-heading").textContent = "Stats";
+  document.getElementById("addons-heading").textContent = vpin.t("theme.add_ons", "Add-ons");
+  document.getElementById("stats-heading").textContent = vpin.t("theme.stats", "Stats");
 
   const picking = list.kind === "collection";
   stage.dataset.view = picking ? "collections" : "tables";
@@ -148,7 +148,9 @@ function drawCollection(row) {
   authorsEl.textContent = "";
   // A collection that did not resolve, or a remote library, has no count.
   const count = row.table_count;
-  metaEl.textContent = Number.isFinite(count) ? `${count} ${count === 1 ? "Table" : "Tables"}` : "";
+  metaEl.textContent = Number.isFinite(count)
+    ? vpin.t("theme.tables", { one: "{count} Table", other: "{count} Tables" }, { count })
+    : "";
 
   const art = row.image_url || (row.game_wheel_urls || [])[0] || "";
   newPreviewToken();
@@ -212,9 +214,9 @@ function drawStats(user) {
   const rows = [
     [vpin.t("frontend.theme.my_rating", "My Rating"),
       rating > 0 ? "★".repeat(rating) + "☆".repeat(Math.max(0, 5 - rating)) : "-"],
-    ["Plays", String(Number(user.play_count) || 0)],
-    ["Minutes", String(minutes)],
-    ["Last Played", last && !Number.isNaN(last.getTime()) ? last.toLocaleDateString() : "-"],
+    [vpin.t("theme.plays", "Plays"), String(Number(user.play_count) || 0)],
+    [vpin.t("theme.minutes", "Minutes"), String(minutes)],
+    [vpin.t("theme.last_played", "Last Played"), last && !Number.isNaN(last.getTime()) ? last.toLocaleDateString() : "-"],
   ];
   statsEl.replaceChildren(...rows.map(([label, value]) => {
     const row = document.createElement("div");
@@ -274,7 +276,7 @@ function videoNode(url) {
 function fallbackNode() {
   const node = document.createElement("div");
   node.className = "art-fallback";
-  node.textContent = "No preview";
+  node.textContent = vpin.t("theme.no_preview", "No preview");
   return node;
 }
 

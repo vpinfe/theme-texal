@@ -22,6 +22,7 @@ options.json          the options a person can change, with their defaults
 index_playfield.html  the playfield page
 style.css             the look
 theme.js              the behavior
+locales/en.json       the theme's own words; add <language>.json to translate them
 gsap.min.js           GSAP, which moves the page on a step
 fonts/                Roboto Bold, Rocket Command Expanded and Rocket Command Gradient
 preview.png           shown in the theme list
